@@ -224,9 +224,9 @@ class ChunkOrganizer:
                 chunk_others.append(c)
 
         # 既存仕様: ヘッダ行（first_line）で文字列ソート
-        chunk_void.sort(key=lambda x: x.first_line)
-        chunk_w.sort(key=lambda x: x.first_line)
-        chunk_others.sort(key=lambda x: x.first_line)
+        chunk_void.sort(key=lambda x: x.first_line, reversed=True)
+        chunk_w.sort(key=lambda x: x.first_line, reversed=True)
+        chunk_others.sort(key=lambda x: x.first_line, reversed=True)
 
         return [head] + chunk_void + chunk_w + chunk_others
 
