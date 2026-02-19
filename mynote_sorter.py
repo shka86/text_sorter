@@ -32,13 +32,6 @@ HEADER_WITH_DATE_RE = re.compile(
 #   - [x] 2026/02/19(日) ...
 #   - [x] 2026/02/19 ...
 # ※空白揺れは少しだけ許容（- の後やカッコ前の空白）
-# CHILD_LINE_RE = re.compile(
-#     r"^(?P<indent>\s*)-\s*"
-#     r"\[(?P<check>x|X)?\]\s*"  # [] or [x]
-#     r"(?P<date>\d{4}/\d{2}/\d{2})\s*"
-#     r"(?P<wd>\((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|月|火|水|木|金|土|日)\))"
-#     r"(?P<rest>.*)$"
-# )
 CHILD_LINE_RE = re.compile(
     r"^(?P<indent>\s*)-\s*"
     r"\[(?P<check>x|X)?\]\s*"  # [] or [x]
