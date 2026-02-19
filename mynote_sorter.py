@@ -5,33 +5,112 @@ import re
 from dataclasses import dataclass
 from datetime import date as _date
 from pathlib import Path as p
-from typing import List
+from typing import List, Optional
+
+# ----------------------------
+# Regex
+# ----------------------------
 
 # 例: "## []", "## [w]"
 HEADER_RE = re.compile(r"^## \[(?P<tag>.*?)\].*$")
 
-# 例: "## [] 2026/02/13 タスクA" / "## [] 2026/02/13(月) タスクA"
+# 例:
+#   ## [] 2026/02/13 タスクA
+#   ## [] 2026/02/13(月) タスクA
+#   ## [] 2026/02/13(Fri) タスクA
 HEADER_WITH_DATE_RE = re.compile(
-    r"^(?P<prefix>## \[(?P<tag>.*?)\])\s*(?P<date>\d{4}/\d{2}/\d{2})(?:\([月火水木金土日]\))?\s*(?P<title>.*)$"
+    r"^(?P<prefix>## \[(?P<tag>.*?)\])\s*"
+    r"(?P<date>\d{4}/\d{2}/\d{2})"
+    r"(?:\s*(?P<wd>\((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|月|火|水|木|金|土|日)\)))?"
+    r"\s*(?P<title>.*)$"
 )
 
-# 例: "- 2026/02/16 詳細めも" / "- 2026/02/16(月) 詳細めも"
-CHILD_DATE_RE = re.compile(
-    r"^(?P<indent>\s*-\s*)(?P<date>\d{4}/\d{2}/\d{2})(?P<wd>\([月火水木金土日]\))?(?P<rest>.*)$"
+# 例（新仕様の子）:
+#   - [] 2026/02/19 ...
+#   - [x] 2026/02/19 ...
+# さらに入力揺れ許容:
+#   - 2026/02/19 ...
+#   - [] 2026/02/19(Mon) ...
+#   - [x] 2026/02/19 (Tue) ...
+CHILD_LINE_RE = re.compile(
+    r"^(?P<indent>\s*)-\s*"
+    r"(?:(?:\[(?P<check>[xX ]?)\])\s*)?"  # [] / [x] / [ ] / 無し
+    r"(?P<date>\d{4}/\d{2}/\d{2})"
+    r"(?:\s*(?P<wd>\((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|月|火|水|木|金|土|日)\)))?"
+    r"(?P<rest>.*)$"
 )
 
 WEEKDAYS_JP = ["月", "火", "水", "木", "金", "土", "日"]
 
 
-def _append_weekday(date_str: str) -> str:
-    """YYYY/MM/DD -> YYYY/MM/DD(曜)。既に曜日が付いていればそのまま。"""
-    # 呼び出し側で "(曜)" を除いた日付が来る想定
+def _weekday_jp(date_str: str) -> Optional[str]:
+    """YYYY/MM/DD -> '月'..'日'（失敗なら None）"""
     try:
         y, mo, d = date_str.split("/")
-        wd = WEEKDAYS_JP[_date(int(y), int(mo), int(d)).weekday()]
-        return f"{date_str}({wd})"
+        return WEEKDAYS_JP[_date(int(y), int(mo), int(d)).weekday()]
     except Exception:
-        return date_str
+        return None
+
+
+def _append_or_fix_weekday(date_str: str) -> str:
+    """YYYY/MM/DD -> YYYY/MM/DD(曜)。曜日は常に日付から正しい(漢字)で付け直す。"""
+    wd = _weekday_jp(date_str)
+    return f"{date_str}({wd})" if wd else date_str
+
+
+def _normalize_child_line(line: str) -> tuple[str, Optional[tuple[bool, str]]]:
+    """
+    子行を正規化して返す。
+      - 形式を '- [] YYYY/MM/DD(曜) ...' / '- [x] YYYY/MM/DD(曜) ...' に統一
+      - 英語曜日も漢字に
+      - 曜日が誤っていても日付から修正
+    戻り値:
+      (新しい行, (is_checked, ymd) or None)
+    """
+    s = line.rstrip("\n")
+    m = CHILD_LINE_RE.match(s)
+    if not m:
+        return line, None
+
+    indent = m.group("indent") or ""
+    check_raw = (m.group("check") or "").strip()
+    is_checked = check_raw.lower() == "x"
+    dt = m.group("date")
+    rest = m.group("rest") or ""
+
+    # 出力は必ず [] / [x]
+    check_out = "x" if is_checked else ""
+
+    # 曜日は必ず正しい漢字を付け直す
+    dt2 = _append_or_fix_weekday(dt)
+
+    # rest のスペース整形（"詳細" のように詰まってたら先頭にスペース）
+    rest2 = rest
+    if rest2 and not rest2.startswith(" "):
+        rest2 = " " + rest2.lstrip()
+
+    new_line = f"{indent}- [{check_out}] {dt2}{rest2}"
+    return new_line + ("\n" if line.endswith("\n") else ""), (is_checked, dt)
+
+
+def _normalize_header_line(header_line: str) -> str:
+    """
+    ヘッダ行:
+      ## [tag] YYYY/MM/DD(曜) タイトル
+    に統一（曜日は常に日付から正しい漢字で付け直す）
+    """
+    h = header_line.rstrip("\n")
+    m = HEADER_WITH_DATE_RE.match(h)
+    if not m:
+        return header_line
+
+    prefix = m.group("prefix")
+    dt = m.group("date")
+    title = m.group("title")
+
+    dt2 = _append_or_fix_weekday(dt)
+    new_h = f"{prefix} {dt2} {title}".rstrip()
+    return new_h + ("\n" if header_line.endswith("\n") else "")
 
 
 @dataclass(frozen=True)
@@ -56,19 +135,17 @@ class Chunk:
         m = HEADER_RE.match(self.first_line)
         if not m:
             return None
-        # "## [ ]" も空扱いにしたいので strip() して正規化
         return m.group("tag").strip()
 
-    def rewrite_header_date_from_first_child(self) -> "Chunk":
-        """2階層構造を想定し、ヘッダ(##)の日付を、直下(-)の先頭日付に置き換える。
-
-        期待する形:
-          ## [tag] YYYY/MM/DD(曜?) タイトル
-          - YYYY/MM/DD(曜?) ...
-
-        ルール:
-          - chunk がヘッダでない / ヘッダに日付がない / 子に日付がない場合は変更しない
-          - 子の日付は「最初に現れた - 行」を採用する（最小/最大ではない）
+    def rewrite_header_date_from_children(self) -> "Chunk":
+        """
+        新ルール:
+          親日付は、子日付のうち
+            - [x] を除外し
+            - - [] の中で最も早い日付
+          を採用して YYYY/MM/DD を差し替える（曜日は後段で付け直す）
+          - - [] が無い場合は親は変更しない
+        ついでに子行も正規化する（曜日修正・英語→漢字・形式統一）
         """
         if not self.is_header_chunk or not self.text:
             return self
@@ -77,81 +154,78 @@ class Chunk:
         if not lines:
             return self
 
-        header = lines[0].rstrip("\n")
-        mh = HEADER_WITH_DATE_RE.match(header)
+        header0 = lines[0]
+        h = header0.rstrip("\n")
+        mh = HEADER_WITH_DATE_RE.match(h)
         if not mh:
-            return self
+            # ヘッダの形式が想定外なら、子だけ正規化して返す
+            out = [header0]
+            changed = False
+            for line in lines[1:]:
+                new_line, _ = _normalize_child_line(line)
+                if new_line != line:
+                    changed = True
+                out.append(new_line)
+            return Chunk("".join(out)) if changed else self
 
-        child_date: str | None = None
+        # 子行正規化しつつ、未完了日のみ収集
+        out_lines = [header0]
+        unchecked_dates: List[str] = []
+
         for line in lines[1:]:
-            mc = CHILD_DATE_RE.match(line.rstrip("\n"))
-            if mc:
-                child_date = mc.group("date")  # "(曜)" は無視
-                break
+            new_line, info = _normalize_child_line(line)
+            out_lines.append(new_line)
+            if info:
+                is_checked, dt = info
+                if not is_checked:
+                    unchecked_dates.append(dt)
 
-        if not child_date:
-            return self
+        if not unchecked_dates:
+            # 親日付は変更しない（子の正規化は反映済み）
+            return Chunk("".join(out_lines))
 
+        chosen = min(unchecked_dates)
+
+        # 親の YYYY/MM/DD を差し替え（曜日は normalize_weekday で付け直す）
         prefix = mh.group("prefix")
         title = mh.group("title")
-        # ここでは曜日は付けない（後段の normalize_weekday で付ける）
-        new_header = f"{prefix} {child_date} {title}".rstrip() + "\n"
+        new_header = f"{prefix} {chosen} {title}".rstrip()
+        out_lines[0] = new_header + ("\n" if header0.endswith("\n") else "")
 
-        if new_header == lines[0]:
-            return self
-        return Chunk(new_header + "".join(lines[1:]))
+        return Chunk("".join(out_lines))
 
     def normalize_weekday(self) -> "Chunk":
-        """ヘッダ(##)行と子(-)行の日付に曜日を付ける。すでに付いていれば何もしない。"""
+        """
+        ヘッダ(##)と子(-)の日付に曜日を付け直す（誤り/英語/無しを修正）。
+        子は rewrite_header_date_from_children でも正規化されるが、
+        ここでもう一度かけて保険にする。
+        """
         if not self.text:
             return self
 
         lines = self.text.splitlines(keepends=True)
+        if not lines:
+            return self
+
         changed = False
         out: List[str] = []
 
-        # ヘッダ(先頭行)
-        if self.is_header_chunk and lines:
-            header = lines[0].rstrip("\n")
-            mh = HEADER_WITH_DATE_RE.match(header)
-            if mh:
-                prefix = mh.group("prefix")
-                dt = mh.group("date")
-                title = mh.group("title")
-                # すでに曜日がついているか（正規表現側で許容してるので、元文字列から判定）
-                if re.search(rf"{re.escape(dt)}\([月火水木金土日]\)", header) is None:
-                    dt2 = _append_weekday(dt)
-                    new_header = f"{prefix} {dt2} {title}".rstrip()
-                    if new_header != header:
-                        out.append(new_header + "\n")
-                        changed = True
-                    else:
-                        out.append(lines[0])
-                else:
-                    out.append(lines[0])
-            else:
-                out.append(lines[0])
+        # ヘッダ
+        if self.is_header_chunk:
+            new_header = _normalize_header_line(lines[0])
+            if new_header != lines[0]:
+                changed = True
+            out.append(new_header)
             start_idx = 1
         else:
             start_idx = 0
 
-        # 子(-)行
+        # 子
         for line in lines[start_idx:]:
-            s = line.rstrip("\n")
-            mc = CHILD_DATE_RE.match(s)
-            if mc:
-                indent = mc.group("indent")
-                dt = mc.group("date")
-                wd = mc.group("wd")
-                rest = mc.group("rest")
-                if wd:
-                    out.append(line)
-                else:
-                    dt2 = _append_weekday(dt)
-                    out.append(f"{indent}{dt2}{rest}\n")
-                    changed = True
-            else:
-                out.append(line)
+            new_line, info = _normalize_child_line(line)
+            if info is not None and new_line != line:
+                changed = True
+            out.append(new_line if info is not None else line)
 
         return Chunk("".join(out)) if changed else self
 
@@ -187,17 +261,21 @@ class ChunkParser:
 
 class ChunkOrganizer:
     def _preprocess_chunks(self, chunks: List[Chunk]) -> List[Chunk]:
-        """ソート前の前処理。
+        """
+        ソート前の前処理（新仕様）:
 
-        1) 2階層構造のとき、## 階層の日付を - 階層の先頭日付に書き換える
-        2) ヘッダ(##)行と子(-)行の日付に曜日を付ける（YYYY/MM/DD -> YYYY/MM/DD(曜)）
+        1) 子行を '- [] YYYY/MM/DD(曜)' / '- [x] YYYY/MM/DD(曜)' に正規化
+           - 英語曜日→漢字
+           - 誤曜日も日付から修正
+        2) 親日付(##)を「未完了(- [])の最小日付」に書き換え（未完了なしなら変更しない）
+        3) 親(##)の曜日も日付から正しい漢字に付け直す
         """
         if not chunks:
             return [Chunk("")]
 
         head = chunks[0]
         rest = [
-            c.rewrite_header_date_from_first_child().normalize_weekday()
+            c.rewrite_header_date_from_children().normalize_weekday()
             for c in chunks[1:]
         ]
         return [head] + rest
@@ -215,7 +293,7 @@ class ChunkOrganizer:
         chunk_others: List[Chunk] = []
 
         for c in rest:
-            t = c.tag  # "## []" -> "" / "## [w]" -> "w" / headerでなければ None
+            t = c.tag  # "## []" -> "" / '## [w]' -> 'w'
             if t == "":
                 chunk_void.append(c)
             elif t == "w":
@@ -223,10 +301,10 @@ class ChunkOrganizer:
             else:
                 chunk_others.append(c)
 
-        # 既存仕様: ヘッダ行（first_line）で文字列ソート
-        chunk_void.sort(key=lambda x: x.first_line, reversed=True)
-        chunk_w.sort(key=lambda x: x.first_line, reversed=True)
-        chunk_others.sort(key=lambda x: x.first_line, reversed=True)
+        # 既存仕様: ヘッダ行（first_line）で文字列ソート（降順）
+        chunk_void.sort(key=lambda x: x.first_line, reverse=True)
+        chunk_w.sort(key=lambda x: x.first_line, reverse=True)
+        chunk_others.sort(key=lambda x: x.first_line, reverse=True)
 
         return [head] + chunk_void + chunk_w + chunk_others
 
@@ -245,7 +323,6 @@ class TextSorterApp:
 
 
 def main():
-    # 必要ならここで tgtpath を指定して実行
     tgtpath = "mynote_sorter_sample.txt"  # ここを書き換え
     app = TextSorterApp(tgtpath)
     out = app.run()
