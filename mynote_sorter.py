@@ -206,6 +206,21 @@ class Chunk:
 
         return Chunk("".join(out)) if changed else self
 
+    def trim_trailing_blank_lines(self, keep_one_newline: bool = True) -> "Chunk":
+        if not self.text:
+            return self
+
+        t = self.text
+
+        if keep_one_newline:
+            # 末尾の「空白だけの行 + 改行」を全部削って、改行2つだけにする
+            t2 = re.sub(r"(?:[ \t]*\n)+\Z", "\n\n", t)
+        else:
+            # 末尾の「空白だけの行 + 改行」を全部消して、改行ゼロにする
+            t2 = re.sub(r"(?:[ \t]*\n)+\Z", "", t)
+
+        return Chunk(t2) if t2 != t else self
+
 
 class ChunkParser:
     def split(self, text: str) -> List[Chunk]:
@@ -270,7 +285,13 @@ class ChunkOrganizer:
         chunk_w.sort(key=lambda x: x.first_line, reverse=True)
         chunk_others.sort(key=lambda x: x.first_line, reverse=True)
 
-        return [head] + chunk_void + chunk_w + chunk_others
+        # return [head] + chunk_void + chunk_w + chunk_others
+        merged = [head] + chunk_void + chunk_w + chunk_others
+
+        # chunkごとに末尾空行を整理（区切り用に改行1つ残す）
+        merged = [c.trim_trailing_blank_lines(keep_one_newline=True) for c in merged]
+
+        return merged
 
 
 class TextSorterApp:
@@ -292,6 +313,7 @@ def main():
     out = app.run()
     print(out, end="")
 
+    out_path = p(tgtpath)
     out_path = p(tgtpath).with_name(f"{p(tgtpath).stem}_sorted.txt")
     out_path.write_text(out, encoding="utf-8")
 
