@@ -1,0 +1,34 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "MyNote Sorter 実行",
+            "type": "process",
+            "command": "python",
+            "args": [
+                "${file}",
+                "--mode",
+                "${input:sortMode}" // ここで入力を参照
+            ],
+            "problemMatcher": []
+        }
+    ],
+    "inputs": [
+        {
+            "id": "sortMode",
+            "type": "pickString", // 選択肢形式を指定
+            "description": "ソートモードを選択してください",
+            "options": [
+                {
+                    "label": "1:未完了の子タスクを独立させる",
+                    "value": "split" // Python側に渡される値
+                },
+                {
+                    "label": "2:親タスクごとにまとめる",
+                    "value": "bind" // Python側に渡される値
+                }
+            ],
+            "default": "split"
+        }
+    ]
+}

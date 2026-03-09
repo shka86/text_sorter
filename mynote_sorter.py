@@ -1,323 +1,173 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import sys
 import re
 from dataclasses import dataclass
 from datetime import date as _date
 from pathlib import Path as p
 from typing import List, Optional, Tuple
-
-# ----------------------------
-# Regex
-# ----------------------------
-
-# 例: "## []", "## [w]"
-HEADER_RE = re.compile(r"^## \[(?P<tag>.*?)\].*$")
-
-# 例:
-#   ## [] 2026/02/13 タスクA
-#   ## [] 2026/02/13(月) タスクA
-#   ## [] 2026/02/13(Fri) タスクA
-HEADER_WITH_DATE_RE = re.compile(
-    r"^(?P<prefix>## \[(?P<tag>.*?)\])\s*"
-    r"(?P<date>\d{4}/\d{2}/\d{2})"
-    r"(?:\((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|月|火|水|木|金|土|日)\))?"
-    r"\s*(?P<title>.*)$"
-)
-
-# 子の仕様
-#   - [] 2026/02/19(Mon) ...
-#   - [x] 2026/02/19(Tue) ...
-#   - [] 2026/02/19(月) ...
-#   - [x] 2026/02/19(日) ...
-#   - [x] 2026/02/19 ...
-# ※空白揺れは少しだけ許容（- の後やカッコ前の空白）
-CHILD_LINE_RE = re.compile(
-    r"^(?P<indent>\s*)-\s*"
-    r"\[(?P<check>x|X)?\]\s*"  # [] or [x]
-    r"(?P<date>\d{4}/\d{2}/\d{2})\s*"
-    r"(?P<wd>\((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|月|火|水|木|金|土|日)\))?"  # ← 任意に
-    r"(?P<rest>.*)$"
-)
+from itertools import groupby
 
 WEEKDAYS_JP = ["月", "火", "水", "木", "金", "土", "日"]
+class OutChunk():
+    def __init__(self,
+        p_status, p_date, p_title, c_body,
+        ):
+        self.p_status = p_status
+        self.p_date = p_date
+        self.p_title = p_title.rstrip()
+        self.c_body = c_body.rstrip()
+class MyTasks():
+    def __init__(self,
+        p_status, p_date, p_title,
+        c_status, c_date, c_title, c_body,
+        ):
+        self.p_status = p_status
+        self.p_date = p_date
+        self.p_title = p_title.rstrip()
+        self.c_status = c_status
+        self.c_date = c_date
+        self.c_title = c_title.rstrip()
+        self.c_body = c_body.rstrip()
 
-
-def _weekday_jp(date_str: str) -> Optional[str]:
-    """YYYY/MM/DD -> '月'..'日'（失敗なら None）"""
+def fix_weekday_jp(date_str: str) -> Optional[str]:
     try:
         y, mo, d = date_str.split("/")
-        return WEEKDAYS_JP[_date(int(y), int(mo), int(d)).weekday()]
+        d = d[:2]  # 古い曜日を捨てる
+        return f"{date_str}({WEEKDAYS_JP[_date(int(y), int(mo), int(d)).weekday()]})"
     except Exception:
-        return None
+        return date_str
 
+def manage_sunday_chunks(tasks: List[MyTasks]) -> List[OutChunk]:
+    # 1. 既存の日曜日チャンク（タイトルが "---"）を除外
+    active_tasks = [x for x in tasks if x.p_title != "---"]
+    if not active_tasks:
+        return []
 
-def _append_or_fix_weekday_jp(date_str: str) -> str:
-    """YYYY/MM/DD -> YYYY/MM/DD(曜)。曜日は常に日付から正しい漢字で付け直す。"""
-    wd = _weekday_jp(date_str)
-    return f"{date_str}({wd})" if wd else date_str
+    # 2. 日付範囲の特定
+    def to_date(s):
+        return _date(*map(int, s.split('(')[0].split('/')))
 
+    sorted_tasks = sorted(active_tasks, key=lambda x: x.c_date)
+    first_d = to_date(sorted_tasks[0].c_date)
+    last_d = to_date(sorted_tasks[-1].c_date)
 
-def _normalize_child_line(line: str) -> Tuple[str, Optional[Tuple[bool, str]]]:
-    """
-    子行を正規化:
-      - 形式: '- [] YYYY/MM/DD(曜) ...' / '- [x] YYYY/MM/DD(曜) ...'
-      - 入力の曜日が英語でも漢字でも、出力は必ず「正しい漢字曜日」に上書き
-    """
-    s = line.rstrip("\n")
-    m = CHILD_LINE_RE.match(s)
-    if not m:
-        return line, None
+    # 3. 日曜日チャンクの生成
+    sundays = []
+    # 最古日の「次の日曜日」を計算
+    curr = first_d + _date.fromtimestamp(0).resolution * (7 - (first_d.weekday() + 1) % 7 or 7)
+    # 最新日の「次の日曜日」まで作成
+    end_d = last_d + _date.fromtimestamp(0).resolution * (7 - (last_d.weekday() + 1) % 7 or 7)
 
-    indent = m.group("indent") or ""
-    is_checked = (m.group("check") or "").lower() == "x"
-    dt = m.group("date")
-    rest = m.group("rest") or ""
+    import datetime
+    delta = datetime.timedelta(days=7)
+    tmp_curr = curr
+    while tmp_curr <= end_d:
+        d_str = tmp_curr.strftime("%Y/%m/%d")
+        # 形式: ## [] yyyy/mm/dd(日) ---
+        sundays.append(OutChunk("[]", f"{d_str}(日)", "-----------------------------------", ""))
+        tmp_curr += delta
 
-    # 子の曜日は常に「日付から正しい漢字」に修正
-    dt2 = _append_or_fix_weekday_jp(dt)
-
-    # rest のスペース整形（"詳細" のように詰まってたら先頭にスペース）
-    rest2 = rest
-    if rest2 and not rest2.startswith(" "):
-        rest2 = " " + rest2.lstrip()
-
-    chk = "x" if is_checked else ""
-    new_line = f"{indent}- [{chk}] {dt2}{rest2}"
-    return new_line + ("\n" if line.endswith("\n") else ""), (is_checked, dt)
-
-
-def _normalize_header_line(header_line: str) -> str:
-    """
-    ヘッダ行は漢字曜日で統一して付け直す（英語/誤り/無しを修正）
-      ## [tag] YYYY/MM/DD(曜) タイトル
-    """
-    h = header_line.rstrip("\n")
-    m = HEADER_WITH_DATE_RE.match(h)
-    if not m:
-        return header_line
-
-    prefix = m.group("prefix")
-    dt = m.group("date")
-    title = m.group("title")
-
-    dt2 = _append_or_fix_weekday_jp(dt)
-    new_h = f"{prefix} {dt2} {title}".rstrip()
-    return new_h + ("\n" if header_line.endswith("\n") else "")
-
-
-@dataclass(frozen=True)
-class Chunk:
-    text: str
-
-    @property
-    def first_line(self) -> str:
-        return self.text.splitlines()[0] if self.text else ""
-
-    @property
-    def is_header_chunk(self) -> bool:
-        return self.first_line.startswith("## [")
-
-    @property
-    def tag(self) -> str | None:
-        if not self.is_header_chunk:
-            return None
-        m = HEADER_RE.match(self.first_line)
-        if not m:
-            return None
-        return m.group("tag").strip()
-
-    def rewrite_header_date_from_children(self) -> "Chunk":
-        """
-        親日付の書き換え:
-          - 子のうち [x] を除外
-          - [] の中で最も早い日付を採用
-          - [] が無ければ親は変更しない
-        ついでに子行も正規化（曜日を正しい漢字へ）
-        """
-        if not self.is_header_chunk or not self.text:
-            return self
-
-        lines = self.text.splitlines(keepends=True)
-        if not lines:
-            return self
-
-        header0 = lines[0]
-        h = header0.rstrip("\n")
-        mh = HEADER_WITH_DATE_RE.match(h)
-        if not mh:
-            # ヘッダが想定外でも、子だけは正規化して返す
-            out = [header0]
-            changed = False
-            for line in lines[1:]:
-                new_line, info = _normalize_child_line(line)
-                if info is not None and new_line != line:
-                    changed = True
-                out.append(new_line if info is not None else line)
-            return Chunk("".join(out)) if changed else self
-
-        out_lines = [header0]
-        unchecked_dates: List[str] = []
-
-        for line in lines[1:]:
-            new_line, info = _normalize_child_line(line)
-            out_lines.append(new_line if info is not None else line)
-            if info:
-                is_checked, dt = info
-                if not is_checked:
-                    unchecked_dates.append(dt)
-
-        if not unchecked_dates:
-            return Chunk("".join(out_lines))
-
-        chosen = min(unchecked_dates)
-
-        prefix = mh.group("prefix")
-        title = mh.group("title")
-        new_header = f"{prefix} {chosen} {title}".rstrip()
-        out_lines[0] = new_header + ("\n" if header0.endswith("\n") else "")
-        return Chunk("".join(out_lines))
-
-    def normalize_weekday(self) -> "Chunk":
-        """ヘッダは漢字曜日で付け直し。子は正規化済みだが保険で再適用。"""
-        if not self.text:
-            return self
-
-        lines = self.text.splitlines(keepends=True)
-        if not lines:
-            return self
-
-        changed = False
-        out: List[str] = []
-
-        if self.is_header_chunk:
-            new_header = _normalize_header_line(lines[0])
-            if new_header != lines[0]:
-                changed = True
-            out.append(new_header)
-            start_idx = 1
-        else:
-            start_idx = 0
-
-        for line in lines[start_idx:]:
-            new_line, info = _normalize_child_line(line)
-            if info is not None and new_line != line:
-                changed = True
-            out.append(new_line if info is not None else line)
-
-        return Chunk("".join(out)) if changed else self
-
-    def trim_trailing_blank_lines(self, keep_one_newline: bool = True) -> "Chunk":
-        if not self.text:
-            return self
-
-        t = self.text
-
-        if keep_one_newline:
-            # 末尾の「空白だけの行 + 改行」を全部削って、改行2つだけにする
-            t2 = re.sub(r"(?:[ \t]*\n)+\Z", "\n\n", t)
-        else:
-            # 末尾の「空白だけの行 + 改行」を全部消して、改行ゼロにする
-            t2 = re.sub(r"(?:[ \t]*\n)+\Z", "", t)
-
-        return Chunk(t2) if t2 != t else self
-
-
-class ChunkParser:
-    def split(self, text: str) -> List[Chunk]:
-        lines = text.splitlines(keepends=True)
-
-        chunks: List[str] = []
-        cur: List[str] = []
-
-        def flush():
-            nonlocal cur
-            chunks.append("".join(cur))
-            cur = []
-
-        for line in lines:
-            if line.startswith("## ["):
-                if cur:
-                    flush()
-                cur.append(line)
-            else:
-                cur.append(line)
-
-        if cur:
-            flush()
-
-        return [Chunk(t) for t in chunks] if chunks else [Chunk("")]
-
-
-class ChunkOrganizer:
-    def _preprocess_chunks(self, chunks: List[Chunk]) -> List[Chunk]:
-        if not chunks:
-            return [Chunk("")]
-
-        head = chunks[0]
-        rest = [
-            c.rewrite_header_date_from_children().normalize_weekday()
-            for c in chunks[1:]
-        ]
-        return [head] + rest
-
-    def sort_chunks(self, chunks: List[Chunk]) -> List[Chunk]:
-        chunks = self._preprocess_chunks(chunks)
-        if not chunks:
-            return [Chunk("")]
-
-        head = chunks[0]
-        rest = chunks[1:]
-
-        chunk_void: List[Chunk] = []
-        chunk_w: List[Chunk] = []
-        chunk_others: List[Chunk] = []
-
-        for c in rest:
-            t = c.tag
-            if t == "":
-                chunk_void.append(c)
-            elif t == "w":
-                chunk_w.append(c)
-            else:
-                chunk_others.append(c)
-
-        chunk_void.sort(key=lambda x: x.first_line, reverse=True)
-        chunk_w.sort(key=lambda x: x.first_line, reverse=True)
-        chunk_others.sort(key=lambda x: x.first_line, reverse=True)
-
-        # return [head] + chunk_void + chunk_w + chunk_others
-        merged = [head] + chunk_void + chunk_w + chunk_others
-
-        # chunkごとに末尾空行を整理（区切り用に改行1つ残す）
-        merged = [c.trim_trailing_blank_lines(keep_one_newline=True) for c in merged]
-
-        return merged
-
-
-class TextSorterApp:
-    def __init__(self, tgtpath: str | p):
-        self.tgtpath = p(tgtpath)
-        self.parser = ChunkParser()
-        self.organizer = ChunkOrganizer()
-
-    def run(self) -> str:
-        text = self.tgtpath.read_text(encoding="utf-8")
-        chunks = self.parser.split(text)
-        sorted_chunks = self.organizer.sort_chunks(chunks)
-        return "".join(c.text for c in sorted_chunks)
-
+    return active_tasks, sundays
 
 def main():
     tgtpath = "mynote_sorter_sample.txt"  # ここを書き換え
-    app = TextSorterApp(tgtpath)
-    out = app.run()
-    print(out, end="")
+    body = p(tgtpath).read_text(encoding='utf-8')
 
-    out_path = p(tgtpath)
+    # --- タスク分解 --------------------------------
+    dlmt1 = r"(^## \[)"
+    parts = re.split(dlmt1, body, flags=re.MULTILINE)
+    chunks = [parts[i] + parts[i+1] for i in range(1, len(parts), 2)]
+    content_head = parts[0]
+
+    dlmt2 = r"(^- )"
+    tasks = []
+    for chunk in chunks:
+
+        # 親階層情報
+        _, p_status, p_date, p_title = chunk.splitlines()[0].split(" ", 3)
+
+        # 子階層情報
+        parts = re.split(dlmt2, chunk.split("\n", 1)[1], flags=re.MULTILINE)
+        child_head = parts[0]
+        childs = [child_head] + [parts[i] + parts[i+1] for i in range(1, len(parts), 2)]
+        childs = [x if x.startswith("- ") else f"- {x}" for x in childs]
+        for child in childs:
+            try:
+                _, c_status, c_date, c_title = child.split(" ", 3)
+                c_body = f"- {c_status} {fix_weekday_jp(c_date)} {c_title}"
+            except Exception:
+                c_status = c_date = c_title = ""
+                c_body = child.rstrip()
+
+            tasks.append(
+                MyTasks(
+                    p_status, fix_weekday_jp(p_date), p_title,
+                    c_status, fix_weekday_jp(c_date), c_title, c_body
+                )
+            )
+
+    # --- 仕分け・並び替え --------------------------------
+    if mode == "split":
+        out_chunks = []
+        
+        # 1. 未完了タスク
+        open_list = [x for x in tasks if x.c_status == "[]"]
+        filtered_open, sunday_chunks = manage_sunday_chunks(open_list)
+        out_chunks.extend(sunday_chunks)
+        for t in filtered_open:
+            c_body = f"{t.c_body}"
+            out_chunks.append(OutChunk("[]", t.c_date, t.p_title, c_body.strip()))
+        out_chunks.sort(key=lambda x: x.p_date, reverse=False)
+
+        # 2. 完了タスク
+        closed_tasks = [x for x in tasks if x.c_status != "[]"]
+        closed_tasks.sort(key=lambda x: (x.p_title, x.c_date), reverse=False)
+        for pt, group in groupby(closed_tasks, key=lambda x: x.p_title):
+            group_list = list(group)
+            new_p_status = "[x]"
+            new_p_date = max(t.c_date for t in group_list)
+            c_body_combined = "".join([f"{t.c_body}\n" for t in group_list])
+            out_chunks.append(OutChunk(new_p_status, new_p_date, pt, c_body_combined.strip()))
+
+    else:
+        # 親タスクでまとめる
+        tasks.sort(key=lambda x: (x.p_title, x.c_date), reverse=True)
+        out_chunks = []
+        # p_title のみをキーにしてグループ化
+        for pt, group in groupby(tasks, key=lambda x: x.p_title):
+            group_list = list(group)
+            group_list.sort(key=lambda x: x.c_date, reverse=True)
+            
+            # 子タスクの状態を分析
+            open_children = [t for t in group_list if t.c_status == "[]"]
+            closed_children = [t for t in group_list if t.c_status == "[x]"]
+
+            if open_children:
+                # 未完了がある場合：未完了の中で最も早い日
+                new_p_status = "[]"
+                new_p_date = min(t.c_date for t in open_children)
+            else:
+                # すべて完了している場合：[x]とし、完了の中で最も遅い日
+                new_p_status = "[x]"
+                new_p_date = max(t.c_date for t in closed_children) if closed_children else group_list[0].p_date
+            
+            c_body_combined = "".join([f"{t.c_body}\n" for t in group_list])
+            out_chunks.append(OutChunk(new_p_status, new_p_date, pt, c_body_combined.strip()))
+
+    # 出力文字列の作成
+    out_body = "".join([f"\n## {c.p_status} {c.p_date} {c.p_title}\n{c.c_body}\n" for c in out_chunks])
+    out = content_head + out_body
+
+    # out_path = p(tgtpath)
     out_path = p(tgtpath).with_name(f"{p(tgtpath).stem}_sorted.txt")
     out_path.write_text(out, encoding="utf-8")
 
-
 if __name__ == "__main__":
+    if len(sys.argv) > 2:
+        mode = sys.argv[2]
+    else:
+        mode = "split" # デフォルト
+
     main()
