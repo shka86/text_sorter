@@ -10,10 +10,10 @@ from typing import List, Optional, Tuple
 from itertools import groupby
 
 
-DELIMITER_PARENT = r"^## \[[x]?\] \d{4}/\d{2}/\d{2}\([月火水木金土日]\)? .*\n}"
-DELIMITER_CHILD = r"^- \[[x]?\] \d{4}/\d{2}/\d{2}\([月火水木金土日]\)? .*\n}"
+DELIMITER_PARENT = r"(^## \[[x]?\] \d{4}/\d{2}/\d{2}\([月火水木金土日]\)? .*\n)"
+DELIMITER_CHILD = r"(^- \[[x]?\] \d{4}/\d{2}/\d{2}\([月火水木金土日]\)? .*\n)"
 
-PICKPTN_PARENT = r"^## (?P<status>\[[x]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))?) (?P<title>.*))"
+PICKPTN_PARENT = r"(^## (?P<status>\[[x]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))?) (?P<title>.*))"
 PICKPTN_CHILD = r"^- (?P<status>\[[x]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))?) (?P<title>[^\n]*)(?:\n(?P<rest>[\s\S]*))?$"
 
 WEEKDAYS_JP = ["月", "火", "水", "木", "金", "土", "日"]
@@ -121,7 +121,7 @@ class Child:
             self.date = fix_weekday_jp(self.date)
             self.title = m.group("title").rstrip()
             raw_rest = m.group("rest")
-            self.rest = raw_rest.rstrip() if raw_rest else None
+            self.rest = raw_rest.rstrip("\n") if raw_rest else None
         else:
             print(self.chunk)
             pass
@@ -197,7 +197,7 @@ def main():
     # -----------------------------------
     out = my_task.child_root_build()
     # # out_path = p(tgtpath)
-    out_path = p(tgtpath).with_name(f"{p(tgtpath).stem}_sorted.txt")
+    out_path = p(tgtpath).with_name(f"{p(tgtpath).stem}_sorted_split.txt")
     out_path.write_text(out, encoding="utf-8")
 
 
