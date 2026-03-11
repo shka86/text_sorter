@@ -30,7 +30,6 @@ class MyTask:
         parts = re.split(DELIMITER_PARENT, self.body, flags=re.MULTILINE)
         self.top_memo = parts[0].rstrip()
         chunks = [parts[i] + parts[i + 1] for i in range(1, len(parts), 2)]
-        self.parents = [Parent(x) for x in chunks]
 
         all_parents = [Parent(x) for x in chunks]
         all_parents.sort(key=lambda x: x.title, reverse=True)
@@ -107,7 +106,7 @@ class MyTask:
 
         # --- closed part --------------------------------
         for parent in self.parents:
-            out += f"## [x] {parent.closeddate} {parent.title}\n"
+            out += f"## [x] {parent.closeddate} {parent.title}"
             out += f"\n"
 
             if len(parent.top_memo) > 1:
@@ -116,7 +115,7 @@ class MyTask:
             closed_childs = [x for x in parent.childs if x.status == "[x]"]
             closed_childs = sorted(closed_childs, key=lambda x: x.date, reverse=True)
             for child in closed_childs:
-                out += f"{child.out}\n\n"
+                out += f"{child.out}\n"
 
         self.out = out
         return self.out
@@ -256,8 +255,8 @@ def main(mode):
         # # out_path = p(tgtpath)
         out_path = p(tgtpath).with_name(f"{p(tgtpath).stem}_sorted.txt")
         out_path.write_text(out1, encoding="utf-8")
-        count_nonspace(body)
-        count_nonspace(out1)
+        print(count_nonspace(body))
+        print(count_nonspace(out1))
 
     # -----------------------------------
     if mode == "open_split":
@@ -265,8 +264,8 @@ def main(mode):
         # # out_path = p(tgtpath)
         out_path = p(tgtpath).with_name(f"{p(tgtpath).stem}_sorted_split.txt")
         out_path.write_text(out2, encoding="utf-8")
-        count_nonspace(body)
-        count_nonspace(out2)
+        print(count_nonspace(body))
+        print(count_nonspace(out2))
 
 
 def count_nonspace(text):
