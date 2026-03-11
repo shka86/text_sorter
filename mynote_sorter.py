@@ -8,13 +8,22 @@ from datetime import date as _date
 from pathlib import Path as p
 from typing import List, Optional, Tuple
 from itertools import groupby
+from datetime import timedelta
 
+# DELIMITER_PARENT = r"(^## \[[x]?\] \d{4}/\d{2}/\d{2}\([月火水木金土日]\)? [^\n]*)"
+# DELIMITER_CHILD = r"(^- \[[x]?\] \d{4}/\d{2}/\d{2}\([月火水木金土日]\)? [^\n]*)"
 
-DELIMITER_PARENT = r"(^## \[[x]?\] \d{4}/\d{2}/\d{2}\([月火水木金土日]\)? [^\n]*)"
-DELIMITER_CHILD = r"(^- \[[x]?\] \d{4}/\d{2}/\d{2}\([月火水木金土日]\)? [^\n]*)"
+# PICKPTN_PARENT = r"(^## (?P<status>\[[x]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))?) (?P<title>.*))"
+# PICKPTN_CHILD = r"^- (?P<status>\[[x]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))?) (?P<title>[^\n]*)(?:\n(?P<rest>[\s\S]*))?$"
 
-PICKPTN_PARENT = r"(^## (?P<status>\[[x]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))?) (?P<title>.*))"
-PICKPTN_CHILD = r"^- (?P<status>\[[x]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))?) (?P<title>[^\n]*)(?:\n(?P<rest>[\s\S]*))?$"
+# \s* を使わず、データの通りに「スペース1つ」を厳格に指定
+# 末尾に \n を入れないことで、最終行や改行コードの差異に強くします
+DELIMITER_PARENT = r"(^## \[[x ]?\] \d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))? .+$)"
+DELIMITER_CHILD = r"(^- \[[x ]?\] \d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))? .+$)"
+
+# 抽出用（PICKPTN）は、タイトルを確実に取るために [^\n]+ を使用
+PICKPTN_PARENT = r"^## (?P<status>\[[x ]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))?) (?P<title>.+)"
+PICKPTN_CHILD = r"^- (?P<status>\[[x ]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))?) (?P<title>[^\n]+)(?:\n(?P<rest>[\s\S]*))?$"
 
 WEEKDAYS_JP = ["月", "火", "水", "木", "金", "土", "日"]
 
@@ -32,6 +41,7 @@ class MyTask:
         chunks = [parts[i] + parts[i + 1] for i in range(1, len(parts), 2)]
 
         all_parents = [Parent(x) for x in chunks]
+        all_parents = del_sunday(all_parents)
         all_parents.sort(key=lambda x: x.title, reverse=True)
 
         # parentの整理
@@ -95,30 +105,64 @@ class MyTask:
     def child_root_build(self):
         out = f"{self.top_memo}\n"
 
-        # --- open part --------------------------------
-        for parent in self.parents:
-            open_childs = [x for x in parent.childs if x.status == "[]"]
-            open_childs = sorted(open_childs, key=lambda x: x.date)
+        # 未完了子タスクの一括集約
+        all_open = []
+        for p in self.parents:
+            if p.title != SUNDAY:
+                all_open.extend([c for c in p.childs if c.status == "[]"])
 
-            for child in open_childs:
-                out += f"## [] {child.date} {parent.title}\n"
-                out += f"{child.out}\n\n"
+        # 未完了パート：日付順にバラして出力
+        if all_open:
+            all_open = add_sunday(all_open)
+            all_open.sort(key=lambda x: x.date)
+            for child in all_open:
+                if child.parent.title == SUNDAY:
+                    out += f"\n## [] {child.date} {child.parent.title}\n"
+                else:
+                    out += f"## [] {child.date} {child.parent.title}\n{child.out}\n\n"
 
-        # --- closed part --------------------------------
-        for parent in self.parents:
-            out += f"## [x] {parent.closeddate} {parent.title}"
-            out += f"\n"
+        # 完了済みパート：親タスク（Parent）ごとにまとめて出力
+        closed_parents = [p for p in self.parents if any(c.status == "[x]" for c in p.childs)]
+        closed_parents.sort(key=lambda x: x.date, reverse=True)
 
-            if len(parent.top_memo) > 1:
-                out += f"{parent.top_memo}\n"
+        for p in closed_parents:
+            out += f"## [x] {p.date} {p.title}\n"
+            if p.top_memo:
+                out += f"{p.top_memo}\n"
 
-            closed_childs = [x for x in parent.childs if x.status == "[x]"]
-            closed_childs = sorted(closed_childs, key=lambda x: x.date, reverse=True)
-            for child in closed_childs:
-                out += f"{child.out}\n"
+            for child in p.childs:
+                if child.status == "[x]":
+                    out += f"{child.out}\n"
+            out += "\n"
 
         self.out = out
         return self.out
+
+
+def add_sunday(open_childs: List[Child]) -> List[Child]:
+    if not open_childs:
+        return []
+
+    to_d = lambda s: _date(*map(int, s.split("(")[0].split("/")))
+    cur = to_d(min(x.date for x in open_childs))
+    end = to_d(max(x.date for x in open_childs))
+    cur += timedelta(days=(6 - cur.weekday() + 7))
+
+    sundays = []
+    while cur <= end:
+        d_str = fix_weekday_jp(cur.strftime("%Y/%m/%d"))
+
+        # 日曜日の親子
+        p_sun = Parent(f"## [] {d_str} {SUNDAY}\n")
+        c_sun = Child(f"- [] {d_str} {SUNDAY}", p_sun)
+        sundays.append(c_sun)
+        cur += timedelta(days=7)
+
+    return open_childs + sundays
+
+
+def del_sunday(tasks):
+    return [x for x in tasks if x.title != SUNDAY]
 
 
 class Parent:
@@ -245,7 +289,10 @@ def manage_sunday_chunks(tasks: List[MyTasks]) -> List[OutChunk]:
 
 def main(mode):
     tgtpath = "mynote_sorter_sample.txt"  # ここを書き換え
+    # tgtpath = "mynote_sorter_sample_sorted.txt"  # ここを書き換え
+    # tgtpath = "mynote_sorter_sample_sorted_split.txt"  # ここを書き換え
     body = p(tgtpath).read_text(encoding="utf-8")
+    print(body)
 
     my_task = MyTask(body)
 
@@ -255,6 +302,7 @@ def main(mode):
         # # out_path = p(tgtpath)
         out_path = p(tgtpath).with_name(f"{p(tgtpath).stem}_sorted.txt")
         out_path.write_text(out1, encoding="utf-8")
+        print(str(out_path))
         print(count_nonspace(body))
         print(count_nonspace(out1))
 
@@ -264,8 +312,11 @@ def main(mode):
         # # out_path = p(tgtpath)
         out_path = p(tgtpath).with_name(f"{p(tgtpath).stem}_sorted_split.txt")
         out_path.write_text(out2, encoding="utf-8")
+        print(str(out_path))
         print(count_nonspace(body))
         print(count_nonspace(out2))
+
+    print(mode)
 
 
 def count_nonspace(text):
@@ -273,8 +324,8 @@ def count_nonspace(text):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 2:
-        mode = sys.argv[2]
+    if len(sys.argv) > 1:
+        mode = sys.argv[1]
     else:
         mode = "default"  # デフォルト
 
