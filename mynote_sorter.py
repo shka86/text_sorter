@@ -119,6 +119,8 @@ class MyTask:
 
         # 完了パート、その他パート：親タスク（Parent）ごとにまとめて出力
         closed_parents = [parent for parent in self.parents if any(c.status != "[]" for c in parent.childs)]
+        for parent in closed_parents:
+            parent.date = max(x.date for x in [y for y in parent.childs if y.status != "[]"])
         closed_parents.sort(key=lambda x: x.date, reverse=True)
 
         for parent in closed_parents:
