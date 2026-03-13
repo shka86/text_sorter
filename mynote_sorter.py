@@ -10,20 +10,16 @@ from typing import List, Optional, Tuple
 from itertools import groupby
 from datetime import timedelta
 
-# DELIMITER_PARENT = r"(^## \[[x]?\] \d{4}/\d{2}/\d{2}\([月火水木金土日]\)? [^\n]*)"
-# DELIMITER_CHILD = r"(^- \[[x]?\] \d{4}/\d{2}/\d{2}\([月火水木金土日]\)? [^\n]*)"
-
-# PICKPTN_PARENT = r"(^## (?P<status>\[[x]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))?) (?P<title>.*))"
-# PICKPTN_CHILD = r"^- (?P<status>\[[x]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))?) (?P<title>[^\n]*)(?:\n(?P<rest>[\s\S]*))?$"
-
 # \s* を使わず、データの通りに「スペース1つ」を厳格に指定
 # 末尾に \n を入れないことで、最終行や改行コードの差異に強くします
 DELIMITER_PARENT = r"(^## \[[x ]?\] \d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))? .+$)"
-DELIMITER_CHILD = r"(^- \[[x ]?\] \d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))? .+$)"
+DELIMITER_CHILD = r"(^- \[[x ]?\] \d{4}/\d{2}/\d{2}(?:\((?:[月火水木金土日]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\))? .+$)"
 
 # 抽出用（PICKPTN）は、タイトルを確実に取るために [^\n]+ を使用
 PICKPTN_PARENT = r"^## (?P<status>\[[x ]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))?) (?P<title>.+)"
-PICKPTN_CHILD = r"^- (?P<status>\[[x ]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))?) (?P<title>[^\n]+)(?:\n(?P<rest>[\s\S]*))?$"
+PICKPTN_CHILD = (
+    r"^- (?P<status>\[[x ]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\((?:[月火水木金土日]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\))?) (?P<title>[^\n]+)(?:\n(?P<rest>[\s\S]*))?$"
+)
 
 WEEKDAYS_JP = ["月", "火", "水", "木", "金", "土", "日"]
 
@@ -107,9 +103,9 @@ class MyTask:
 
         # 未完了子タスクの一括集約
         all_open = []
-        for p in self.parents:
-            if p.title != SUNDAY:
-                all_open.extend([c for c in p.childs if c.status == "[]"])
+        for parent in self.parents:
+            if parent.title != SUNDAY:
+                all_open.extend([c for c in parent.childs if c.status == "[]"])
 
         # 未完了パート：日付順にバラして出力
         if all_open:
@@ -117,20 +113,20 @@ class MyTask:
             all_open.sort(key=lambda x: x.date)
             for child in all_open:
                 if child.parent.title == SUNDAY:
-                    out += f"\n## [] {child.date} {child.parent.title}\n"
+                    out += f"## [] {child.date} {child.parent.title}\n\n"
                 else:
                     out += f"## [] {child.date} {child.parent.title}\n{child.out}\n\n"
 
-        # 完了済みパート：親タスク（Parent）ごとにまとめて出力
-        closed_parents = [p for p in self.parents if any(c.status == "[x]" for c in p.childs)]
+        # 完了パート、その他パート：親タスク（Parent）ごとにまとめて出力
+        closed_parents = [parent for parent in self.parents if any(c.status != "[]" for c in parent.childs)]
         closed_parents.sort(key=lambda x: x.date, reverse=True)
 
-        for p in closed_parents:
-            out += f"## [x] {p.date} {p.title}\n"
-            if p.top_memo:
-                out += f"{p.top_memo}\n"
+        for parent in closed_parents:
+            out += f"## [x] {parent.date} {parent.title}\n"
+            if parent.top_memo:
+                out += f"{parent.top_memo}\n"
 
-            for child in p.childs:
+            for child in parent.childs:
                 if child.status == "[x]":
                     out += f"{child.out}\n"
             out += "\n"
@@ -146,7 +142,7 @@ def add_sunday(open_childs: List[Child]) -> List[Child]:
     to_d = lambda s: _date(*map(int, s.split("(")[0].split("/")))
     cur = to_d(min(x.date for x in open_childs))
     end = to_d(max(x.date for x in open_childs))
-    cur += timedelta(days=(6 - cur.weekday() + 7))
+    cur += timedelta(days=(6 - cur.weekday()))
 
     sundays = []
     while cur <= end:
@@ -186,7 +182,10 @@ class Parent:
         parts = re.split(DELIMITER_CHILD, child, flags=re.MULTILINE)
         self.top_memo = parts[0].rstrip()
         chunks = [parts[i] + parts[i + 1] for i in range(1, len(parts), 2)]
-        self.childs = [Child(x, self) for x in chunks]
+        if len(chunks) == 0:
+            self.childs = [Child("", self)]
+        else:
+            self.childs = [Child(x, self) for x in chunks]
 
     def update_date(self):
         open_childs = [x for x in self.childs if x.status == "[]"]
@@ -205,7 +204,7 @@ class Parent:
     def sort(self):
         open_childs = [x for x in self.childs if x.status == "[]"]
         open_childs = sorted(open_childs, key=lambda x: x.date)
-        closed_childs = [x for x in self.childs if x.status == "[x]"]
+        closed_childs = [x for x in self.childs if x.status == "[x]" or x.status == "DUMMYCHILD"]
         closed_childs = sorted(closed_childs, key=lambda x: x.date, reverse=True)
         self.childs = open_childs + closed_childs
         # self.out = "\n".join([x.out for x in childs])
@@ -234,8 +233,11 @@ class Child:
             raw_rest = m.group("rest")
             self.rest = raw_rest.rstrip("\n") if raw_rest else None
         else:
-            print(self.chunk)
-            pass
+            self.status = "DUMMYCHILD"
+            self.date = fix_weekday_jp(self.parent.date)
+            self.title = "DUMMYCHILD"
+            raw_rest = self.chunk
+            self.rest = raw_rest.rstrip("\n") if raw_rest else None
 
     def build(self):
         out = f"- {self.status} {self.date} {self.title}"
