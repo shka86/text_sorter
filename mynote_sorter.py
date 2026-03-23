@@ -12,11 +12,13 @@ from datetime import timedelta
 
 # \s* を使わず、データの通りに「スペース1つ」を厳格に指定
 # 末尾に \n を入れないことで、最終行や改行コードの差異に強くします
-DELIMITER_PARENT = r"(^## \[[x ]?\] \d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))? .+$)"
+DELIMITER_PARENT = r"(^## \[[x ]?\] \d{4}/\d{2}/\d{2}(?:\((?:[月火水木金土日]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)?\))? .+$)"
 DELIMITER_CHILD = r"(^- \[[x ]?\] \d{4}/\d{2}/\d{2}(?:\((?:[月火水木金土日]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\))? .+$)"
 
 # 抽出用（PICKPTN）は、タイトルを確実に取るために [^\n]+ を使用
-PICKPTN_PARENT = r"^## (?P<status>\[[x ]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\([月火水木金土日]\))?) (?P<title>.+)"
+PICKPTN_PARENT = (
+    r"^## (?P<status>\[[x ]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\((?:[月火水木金土日]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\))?) (?P<title>[^\n]+)(?:\n(?P<rest>[\s\S]*))?$"
+)
 PICKPTN_CHILD = (
     r"^- (?P<status>\[[x ]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\((?:[月火水木金土日]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\))?) (?P<title>[^\n]+)(?:\n(?P<rest>[\s\S]*))?$"
 )
@@ -115,7 +117,11 @@ class MyTask:
                 if child.parent.title == SUNDAY:
                     out += f"## [] {child.date} {child.parent.title}\n\n"
                 else:
-                    out += f"## [] {child.date} {child.parent.title}\n{child.out}\n\n"
+                    if child.parent.top_memo and child.parent.topnotwrote:
+                        out += f"## [] {child.date} {child.parent.title}\n{child.parent.top_memo}\n{child.out}\n\n"
+                        parent.topnotwrote = False
+                    else:
+                        out += f"## [] {child.date} {child.parent.title}\n{child.out}\n\n"
 
         # 完了パート、その他パート：親タスク（Parent）ごとにまとめて出力
         closed_parents = [parent for parent in self.parents if any(c.status != "[]" for c in parent.childs)]
@@ -125,8 +131,9 @@ class MyTask:
 
         for parent in closed_parents:
             out += f"## [x] {parent.date} {parent.title}\n"
-            if parent.top_memo:
+            if parent.top_memo and parent.topnotwrote:
                 out += f"{parent.top_memo}\n"
+                parent.topnotwrote = False
 
             for child in parent.childs:
                 if child.status == "[x]":
@@ -169,6 +176,7 @@ class Parent:
         self.parse()
         self.update_date()
         self.sort()
+        self.topnotwrote = True
 
     def parse(self):
         lines = self.chunk.splitlines()
