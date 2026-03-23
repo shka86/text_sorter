@@ -119,7 +119,7 @@ class MyTask:
                 else:
                     if child.parent.top_memo and child.parent.topnotwrote:
                         out += f"## [] {child.date} {child.parent.title}\n{child.parent.top_memo}\n{child.out}\n\n"
-                        parent.topnotwrote = False
+                        child.parent.topnotwrote = False
                     else:
                         out += f"## [] {child.date} {child.parent.title}\n{child.out}\n\n"
 
