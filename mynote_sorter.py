@@ -16,12 +16,8 @@ DELIMITER_PARENT = r"(^## \[[x ]?\] \d{4}/\d{2}/\d{2}(?:\((?:[月火水木金土
 DELIMITER_CHILD = r"(^- \[[x ]?\] \d{4}/\d{2}/\d{2}(?:\((?:[月火水木金土日]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\))? .+$)"
 
 # 抽出用（PICKPTN）は、タイトルを確実に取るために [^\n]+ を使用
-PICKPTN_PARENT = (
-    r"^## (?P<status>\[[x ]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\((?:[月火水木金土日]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\))?) (?P<title>[^\n]+)(?:\n(?P<rest>[\s\S]*))?$"
-)
-PICKPTN_CHILD = (
-    r"^- (?P<status>\[[x ]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\((?:[月火水木金土日]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\))?) (?P<title>[^\n]+)(?:\n(?P<rest>[\s\S]*))?$"
-)
+PICKPTN_PARENT = r"^## (?P<status>\[[x ]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\((?:[月火水木金土日]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\))?) (?P<title>[^\n]+)(?:\n(?P<rest>[\s\S]*))?$"
+PICKPTN_CHILD = r"^- (?P<status>\[[x ]?\]) (?P<date>\d{4}/\d{2}/\d{2}(?:\((?:[月火水木金土日]|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\))?) (?P<title>[^\n]+)(?:\n(?P<rest>[\s\S]*))?$"
 
 WEEKDAYS_JP = ["月", "火", "水", "木", "金", "土", "日"]
 
@@ -54,11 +50,12 @@ class MyTask:
                     base.childs.extend(other.childs)
 
             # top_memo
-            top_memo = ""
+            top_memos = []
             for pt in p_list:
                 if len(pt.top_memo) > 0:
-                    top_memo += f"{pt.top_memo}\n"
-            base.top_memo = top_memo.rstrip("\n")
+                    top_memos.append(f"{pt.top_memo}\n")
+            top_memos = set(top_memos)
+            base.top_memo = "".join(top_memos).rstrip("\n")
 
             # status更新
             if any(x.status == "[]" for x in base.childs):
@@ -117,9 +114,9 @@ class MyTask:
                 if child.parent.title == SUNDAY:
                     out += f"## [] {child.date} {child.parent.title}\n\n"
                 else:
-                    if child.parent.top_memo and child.parent.topnotwrote:
+                    if child.parent.top_memo and not child.parent.topnotwrote:
                         out += f"## [] {child.date} {child.parent.title}\n{child.parent.top_memo}\n{child.out}\n\n"
-                        child.parent.topnotwrote = False
+                        child.parent.topnotwrote = True
                     else:
                         out += f"## [] {child.date} {child.parent.title}\n{child.out}\n\n"
 
@@ -131,9 +128,9 @@ class MyTask:
 
         for parent in closed_parents:
             out += f"## [x] {parent.date} {parent.title}\n"
-            if parent.top_memo and parent.topnotwrote:
+            if parent.top_memo and not parent.topnotwrote:
                 out += f"{parent.top_memo}\n"
-                parent.topnotwrote = False
+                parent.topnotwrote = True
 
             for child in parent.childs:
                 if child.status == "[x]":
@@ -174,9 +171,9 @@ class Parent:
     def __init__(self, chunk):
         self.chunk = chunk
         self.parse()
-        self.update_date()
+        self.update_date_and_status()
         self.sort()
-        self.topnotwrote = True
+        self.topnotwrote = False
 
     def parse(self):
         lines = self.chunk.splitlines()
@@ -197,13 +194,16 @@ class Parent:
         else:
             self.childs = [Child(x, self) for x in chunks]
 
-    def update_date(self):
+    def update_date_and_status(self):
         open_childs = [x for x in self.childs if x.status == "[]"]
         if len(open_childs) > 1:
             open_childs.sort(key=lambda x: x.date)
             new_date = open_childs[0].date
             self.date = new_date
             self.opendate = new_date
+            self.status = "[]"
+        else:
+            self.status = "[x]"
 
         closed_childs = [x for x in self.childs if x.status == "[x]"]
         if len(closed_childs) > 1:
